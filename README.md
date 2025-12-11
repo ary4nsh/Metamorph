@@ -6,6 +6,8 @@ This code is a simple metamorphic engine that takes .raw file of a 32-bit ELF ex
 - PUSH [register] / POP [register]
 - PUSHAD / POPAD
 
+* Note: This code will be updated to support amd64 architecture and injecting/changing instructions...
+
 ## Usage
 
 To make a .raw file of a shellcode, simply convert your assembly code into a machine code using these commands:

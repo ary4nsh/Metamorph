@@ -22,7 +22,7 @@ ld -m elf_i386 -s -o shellcode shellcode.o
 
 After that, you can use this tool to generate a metamorphicated 32-bit ELF file:
 ```
-./metamorph shellcode executable
+./Metamorph shellcode executable
 ```
 
 ## Example:

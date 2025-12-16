@@ -1,10 +1,14 @@
 # Metamorph
 
-This code is a simple metamorphic engine that takes .raw file of a 32-bit ELF executable binary as input, and generates a 32-bit metamorphicated ELF executable binary file. It currently supports injecting these instructions:
+This code is a simple metamorphic engine that takes a 32-bit ELF executable binary as input, and generates a 32-bit metamorphicated ELF executable binary file. It currently supports injecting these instructions as NOP:
 - NOP
 - CMP [register],[register]
 - PUSH [register] / POP [register]
 - PUSHAD / POPAD
+
+And altering these instructions:
+- `mov [register 1], [register 2]`: with `push [register 2]`; `pop [register 1]` or `xor [register 1], [register 1]`; `add [register 1], [register 2]`
+- `xor [register], [register]`: with `mov [register], 0` or `sub [register], [register]`
 
 Note: This code will be updated to support amd64 architecture and injecting/changing instructions...
 
@@ -16,108 +20,89 @@ nasm -f elf32 shellcode.asm -o shellcode.o
 ld -m elf_i386 -s -o shellcode shellcode.o
 ```
 
-Then, you need to generate a .raw file from your executable:
-```
-objcopy -O binary shellcode shellcode.raw
-```
-
 After that, you can use this tool to generate a metamorphicated 32-bit ELF file:
 ```
-./metamorph shellcode.raw executable
+./metamorph shellcode executable
 ```
 
 ## Example:
 ```
-┌──(env)─(kali㉿kali)-[~/Codes/Go/test/metamorph]
-└─$ ./metamorph shellcode.raw shellcode2
-Original code size: 4108 bytes
-Detected mode: 64-bit (output will be 32-bit ELF)
-Disassembled 2046 instructions
+┌──(kali㉿kali)-[~/Codes/Go/Metamorph]
+└─$ ./Metamorph shellcode shellcode2
+Original file: 4492 bytes
+Found 5 sections
+.text section: offset=0x1000, size=25 bytes
+.symtab section: offset=0x101c, size=96 bytes
+.strtab section: offset=0x107c, size=39 bytes
+.shstrtab section: offset=0x10a3, size=33 bytes
+Disassembled 11 instructions
+Replaced 3 patterns:
+  0x0: XOR EAX, EAX -> SUB EAX, EAX
+  0xd: MOV EBX, ESP -> XOR EBX, EBX; ADD EBX, ESP
+  0x11: MOV ECX, ESP -> PUSH ESP; POP ECX
+Injecting NOP at offset 0x13
 
-Selected instruction #1195:
-  Offset: 0x967
-  Instruction: ADD [RAX], AL
-  Size: 2 bytes
-  Bytes: 00 00 
+.text size change: 25 -> 28 bytes (+3)
 
-Injecting PUSH EBX; POP EBX (53 5b ) at offset: 0x969
+Output file: 4495 bytes
 
-  No relative jumps/calls needed adjustment
-Modified code size: 4110 bytes
-Final ELF size: 8384 bytes
+Success: shellcode2
 
-Successfully created ELF executable: shellcode2
-                                                                     
-┌──(env)─(kali㉿kali)-[~/Codes/Go/test/metamorph]
-└─$ ./shellcode2                        
-Hello ther$ whoami
+┌──(kali㉿kali)-[~/Codes/Go/Metamorph]
+└─$ ./shellcode2
+$ whoami
 kali
 ```
 
 ## Disassembly Difference
 For original ELF:
 ```
-┌──(env)─(kali㉿kali)-[~/Codes/Go/test/metamorph]
-└─$ objdump -d -M intel shellcode 
+┌──(kali㉿kali)-[~/Codes/Go/Metamorph]
+└─$ objdump -d -M intel shellcode
 
 shellcode:     file format elf32-i386
 
 
 Disassembly of section .text:
 
-08049000 <.text>:
- 8049000:       b8 04 00 00 00          mov    eax,0x4
- 8049005:       bb 01 00 00 00          mov    ebx,0x1
- 804900a:       b9 00 a0 04 08          mov    ecx,0x804a000
- 804900f:       ba 0c 00 00 00          mov    edx,0xc
- 8049014:       cd 80                   int    0x80
- 8049016:       31 c0                   xor    eax,eax
- 8049018:       50                      push   eax
- 8049019:       68 2f 2f 73 68          push   0x68732f2f
- 804901e:       68 2f 62 69 6e          push   0x6e69622f
- 8049023:       89 e3                   mov    ebx,esp
- 8049025:       31 c9                   xor    ecx,ecx
- 8049027:       31 d2                   xor    edx,edx
- 8049029:       b0 0b                   mov    al,0xb
- 804902b:       cd 80                   int    0x80
+08049000 <_start>:
+ 8049000:       31 c0                   xor    eax,eax
+ 8049002:       50                      push   eax
+ 8049003:       68 2f 2f 73 68          push   0x68732f2f
+ 8049008:       68 2f 62 69 6e          push   0x6e69622f
+ 804900d:       89 e3                   mov    ebx,esp
+ 804900f:       50                      push   eax
+ 8049010:       53                      push   ebx
+ 8049011:       89 e1                   mov    ecx,esp
+ 8049013:       31 d2                   xor    edx,edx
+ 8049015:       b0 0b                   mov    al,0xb
+ 8049017:       cd 80                   int    0x80
 ```
 
 
 For metamorphicated ELF:
 ```
-┌──(env)─(kali㉿kali)-[~/Codes/Go/test/metamorph]
-└─$ objdump -d -M intel shellcode2     
+┌──(kali㉿kali)-[~/Codes/Go/Metamorph]
+└─$ objdump -d -M intel shellcode2
 
 shellcode2:     file format elf32-i386
 
 
 Disassembly of section .text:
 
-08049000 <.text>:
- 8049000:       b8 04 00 00 00          mov    eax,0x4
- 8049005:       bb 01 00 00 00          mov    ebx,0x1
- 804900a:       b9 00 a0 04 08          mov    ecx,0x804a000
- 804900f:       ba 0c 00 00 00          mov    edx,0xc
- 8049014:       cd 80                   int    0x80
- 8049016:       31 c0                   xor    eax,eax
- 8049018:       50                      push   eax
- 8049019:       68 2f 2f 73 68          push   0x68732f2f
- 804901e:       68 2f 62 69 6e          push   0x6e69622f
- 8049023:       89 e3                   mov    ebx,esp
- 8049025:       31 c9                   xor    ecx,ecx
- 8049027:       31 d2                   xor    edx,edx
- 8049029:       b0 0b                   mov    al,0xb
- 804902b:       cd 80                   int    0x80
-        ...
- 8049969:       53                      push   ebx
- 804996a:       5b                      pop    ebx
-        ...
- 8049fff:       00 00                   add    BYTE PTR [eax],al
- 804a001:       00 48 65                add    BYTE PTR [eax+0x65],cl
- 804a004:       6c                      ins    BYTE PTR es:[edi],dx
- 804a005:       6c                      ins    BYTE PTR es:[edi],dx
- 804a006:       6f                      outs   dx,DWORD PTR ds:[esi]
- 804a007:       20 74 68 65             and    BYTE PTR [eax+ebp*2+0x65],dh
- 804a00b:       72 65                   jb     0x804a072
-        ...
+08049000 <_start>:
+ 8049000:       29 c0                   sub    eax,eax
+ 8049002:       50                      push   eax
+ 8049003:       68 2f 2f 73 68          push   0x68732f2f
+ 8049008:       68 2f 62 69 6e          push   0x6e69622f
+ 804900d:       31 db                   xor    ebx,ebx
+ 804900f:       01 e3                   add    ebx,esp
+ 8049011:       50                      push   eax
+ 8049012:       53                      push   ebx
+ 8049013:       90                      nop
+ 8049014:       54                      push   esp
+ 8049015:       59                      pop    ecx
+ 8049016:       31 d2                   xor    edx,edx
+ 8049018:       b0 0b                   mov    al,0xb
+ 804901a:       cd 80                   int    0x80
 ```

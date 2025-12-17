@@ -7,8 +7,10 @@ This code is a simple metamorphic engine that takes a 32-bit ELF executable bina
 - PUSHAD / POPAD
 
 And altering these instructions:
-- `mov [register 1], [register 2]`: with `push [register 2]`; `pop [register 1]` or `xor [register 1], [register 1]`; `add [register 1], [register 2]`
-- `xor [register], [register]`: with `mov [register], 0` or `sub [register], [register]`
+- mov [register 1], [register 2:
+with push [register 2]; pop [register 1] or xor [register 1], [register 1]; add [register 1], [register 2]
+- xor [register], [register]:
+with mov [register], 0 or sub [register], [register]
 
 Note: This code will be updated to support amd64 architecture and injecting/changing instructions...
 

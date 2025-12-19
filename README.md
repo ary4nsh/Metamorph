@@ -25,7 +25,7 @@ nasm -f elf64 shellcode.asm -o shellcode.o
 ld shellcode.o -o shellcode
 ```
 
-After that, you can use this tool to generate a metamorphicated 32-bit ELF file:
+After that, you can use this tool to generate a metamorphicated 32-bit/64-bit ELF file:
 ```
 ./Metamorph shellcode new_executable
 ```

@@ -133,12 +133,6 @@ func patchBytes(code []byte, offset uint64, oldBytes, newBytes []byte) []byte {
 	return newCode
 }
 
-func is32BitGPR(reg x86asm.Reg) bool {
-	return reg == x86asm.EAX || reg == x86asm.ECX || reg == x86asm.EDX ||
-		reg == x86asm.EBX || reg == x86asm.ESI || reg == x86asm.EDI ||
-		reg == x86asm.ESP || reg == x86asm.EBP
-}
-
 func getPushOpcode(reg x86asm.Reg) byte {
 	switch reg {
 	case x86asm.EAX:
@@ -182,34 +176,5 @@ func getPopOpcode(reg x86asm.Reg) byte {
 		return 0x5F
 	default:
 		return 0x58
-	}
-}
-
-func getModRM(dst, src x86asm.Reg) byte {
-	dstBits := getRegBits(dst)
-	srcBits := getRegBits(src)
-	return 0xC0 | (srcBits << 3) | dstBits
-}
-
-func getRegBits(reg x86asm.Reg) byte {
-	switch reg {
-	case x86asm.EAX:
-		return 0
-	case x86asm.ECX:
-		return 1
-	case x86asm.EDX:
-		return 2
-	case x86asm.EBX:
-		return 3
-	case x86asm.ESP:
-		return 4
-	case x86asm.EBP:
-		return 5
-	case x86asm.ESI:
-		return 6
-	case x86asm.EDI:
-		return 7
-	default:
-		return 0
 	}
 }

@@ -7,25 +7,30 @@ This code is a simple metamorphic engine that takes a 32-bit/64-bit ELF executab
 - PUSHAD / POPAD
 
 And altering these instructions:
+Original:
 ```diff
 - mov [register 1], [register 2]
 ```
+Sample 1:
 ```diff
 + push [register 2] 
 + pop [register 1]
 ```
+Sample 2:
 ```diff
 + xor [register 1], [register 1] 
 + add [register 1], [register 2]
 ```
 
-
+Original:
 ```diff
 - xor [register], [register]
 ```
+Sample 1:
 ```diff
 + mov [register], 0
 ```
+Sample2:
 ```diff
 + sub [register], [register]
 ```

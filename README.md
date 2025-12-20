@@ -8,7 +8,7 @@ This code is a simple metamorphic engine that takes a 32-bit/64-bit ELF executab
 
 And altering these instructions:
 
-mov [register 1], [register 2]
+- mov [register 1], [register 2]
 
 <table>
         <tr>
@@ -45,18 +45,82 @@ mov [register 1], [register 2]
         </tr>
     </table>
 
-- Original:
-```diff
 - xor [register], [register]
-```
-Sample 1:
+
+<table>
+        <tr>
+            <td align=center>Original</td>
+            <td></td>
+            <td align=center>Metamorphicated (sample 1)</td>
+            <td align=center>Metamorphicated (sample 2)</td>
+        </tr>
+        <tr>
+            <td>
+
 ```diff
-+ mov [register], 0
+- XOR EAX, EAX
 ```
-Sample2:
+
+</td>
+<td align=center>→</td>
+<td>
+
 ```diff
-+ sub [register], [register]
++ MOV EAX, 0
 ```
+
+</td>
+<td>
+
+```diff
++ SUB EAX, EAX
+```
+
+- mov [register], [immidiate value]
+
+<table>
+        <tr>
+            <td align=center>Original</td>
+            <td></td>
+            <td align=center>Metamorphicated (sample 1)</td>
+            <td align=center>Metamorphicated (sample 2)</td>
+        </tr>
+        <tr>
+            <td>
+
+```diff
+- MOV AL, 0xB
+```
+
+</td>
+<td align=center>→</td>
+<td>
+
+```diff
++ MOV CL, 0x5A
++ MOV AL, 0xB1
++ ADD AL, CL
+```
+
+</td>
+<td>
+
+```diff
++ MOV CL, 0x22
++ MOV AL, 0x29
++ XOR AL, CL
+```
+
+</td>
+<td>
+
+```diff
++ MOV CL, 0x64
++ MOV AL, 0x6F
++ SUB AL, CL
+```
+
+* Note: In some runs, the newly created shellcode might crash. Run the tool again, and it may work correctly.
 
 ## Usage
 

@@ -9,40 +9,71 @@ import (
 	"golang.org/x/arch/x86/x86asm"
 )
 
-type InstructionX64 struct {
-	Offset uint64
-	Size   int
-	Inst   x86asm.Inst
-}
-
-type XorReplacementX64 struct {
+type MovRegRegReplacement struct {
 	Offset   uint64
 	Original string
 	Replaced string
 }
 
-// ProcessX64Code applies metamorphic transformations to x64 code
-func ProcessX64Code(code []byte) ([]byte, error) {
+type Instruction struct {
+	Offset uint64
+	Size   int
+	Inst   x86asm.Inst
+}
+
+// ProcessX86Code applies metamorphic transformations to x86 code
+func ProcessX86Code(code []byte, textBaseAddr uint32) ([]byte, error) {
 	rand.Seed(time.Now().UnixNano())
 
 	// Disassemble
-	instructions, err := disassemble(code, 64)
+	instructions, err := disassemble(code, 32)
 	if err != nil || len(instructions) == 0 {
 		return nil, fmt.Errorf("disassembly failed: %w", err)
 	}
 
 	fmt.Printf("Disassembled %d instructions\n", len(instructions))
 
-	// Replace XOR and MOV patterns
-	code, replacements := replaceX64Patterns(code, instructions)
-	if len(replacements) > 0 {
-		fmt.Printf("Replaced %d patterns:\n", len(replacements))
-		for _, repl := range replacements {
+	transformationCount := 0
+
+	// Try MOV reg, imm transformation
+	code, movReplacements := ReplaceMovRegImm(code, instructions)
+	if len(movReplacements) > 0 {
+		fmt.Printf("Replaced 1 MOV reg, imm pattern:\n")
+		for _, repl := range movReplacements {
 			fmt.Printf("  0x%x: %s -> %s\n", repl.Offset, repl.Original, repl.Replaced)
 		}
+		transformationCount++
+		// Re-disassemble after transformation
+		instructions, _ = disassemble(code, 32)
+	}
 
-		// Re-disassemble
-		instructions, _ = disassemble(code, 64)
+	// Try XOR/MOV reg,reg patterns
+	code, xorReplacements := ReplaceXorPatterns(code, instructions)
+	if len(xorReplacements) > 0 {
+		fmt.Printf("Replaced 1 XOR/MOV pattern:\n")
+		for _, repl := range xorReplacements {
+			fmt.Printf("  0x%x: %s -> %s\n", repl.Offset, repl.Original, repl.Replaced)
+		}
+		transformationCount++
+		// Re-disassemble after transformation
+		instructions, _ = disassemble(code, 32)
+	}
+
+	// ----  MOV r,r  ->  PUSH r / POP r  ---------------------------------
+	code, movRegReplacements := ReplaceMovRegReg(code, instructions)
+	if len(movRegReplacements) > 0 {
+		fmt.Printf("Replaced %d MOV reg,reg pattern(s):\n", len(movRegReplacements))
+		for _, repl := range movRegReplacements {
+			fmt.Printf("  0x%x: %s -> %s\n", repl.Offset, repl.Original, repl.Replaced)
+		}
+		transformationCount++
+		// Re-disassemble after transformation
+		instructions, _ = disassemble(code, 32)
+	}
+	// ---------------------------------------------------------------------
+
+	if transformationCount > 0 {
+		fmt.Printf("Applied %d transformation(s)\n", transformationCount)
 	}
 
 	// Inject random instruction
@@ -51,17 +82,25 @@ func ProcessX64Code(code []byte) ([]byte, error) {
 		selectedInsn := instructions[randomIdx]
 		insertOffset := selectedInsn.Offset + uint64(selectedInsn.Size)
 
-		injectBytes, injectName := generateRandomX64Instruction()
+		injectBytes, injectName := generateRandomInstruction()
 		fmt.Printf("Injecting %s at offset 0x%x\n", injectName, insertOffset)
 
-		// Insert instruction
+		// Validate insertOffset is within bounds
+		if insertOffset > uint64(len(code)) {
+			insertOffset = uint64(len(code))
+		}
+
+		// ---------- inject ----------
 		newCode := make([]byte, len(code)+len(injectBytes))
 		copy(newCode[:insertOffset], code[:insertOffset])
 		copy(newCode[insertOffset:], injectBytes)
 		copy(newCode[insertOffset+uint64(len(injectBytes)):], code[insertOffset:])
 
-		// Fix relative jumps
-		fixRelativeOffsets(newCode, insertOffset, instructions, len(injectBytes))
+		// ---------- relocate ----------
+		relocateCode(newCode,
+			uint32(textBaseAddr),     // start of .text in memory
+			uint32(insertOffset),     // file offset where we inserted
+			uint32(len(injectBytes))) // how many bytes were inserted
 
 		return newCode, nil
 	}
@@ -69,7 +108,7 @@ func ProcessX64Code(code []byte) ([]byte, error) {
 	return code, nil
 }
 
-func disassembleX64(code []byte, mode int) ([]Instruction, error) {
+func disassemble(code []byte, mode int) ([]Instruction, error) {
 	var instructions []Instruction
 	offset := uint64(0)
 
@@ -92,379 +131,392 @@ func disassembleX64(code []byte, mode int) ([]Instruction, error) {
 	return instructions, nil
 }
 
-func replaceX64Patterns(code []byte, instructions []Instruction) ([]byte, []XorReplacement) {
-	var replacements []XorReplacement
+// ============================================================================
+// MOV reg, imm Transformation (supports 8/16/32-bit registers)
+// ============================================================================
 
-	// XOR r,r -> zero (64-bit registers)
-	xorZero64 := map[uint32]struct {
-		mov []byte // MOV r64, 0 (using 32-bit zero extension)
-		sub []byte // SUB r64, r64
-		reg string
-	}{
-		// XOR rax, rax (48 31 C0)
-		0xC03148: {[]byte{0x48, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00}, []byte{0x48, 0x29, 0xC0}, "RAX"},
-		// XOR rcx, rcx (48 31 C9)
-		0xC93148: {[]byte{0x48, 0xC7, 0xC1, 0x00, 0x00, 0x00, 0x00}, []byte{0x48, 0x29, 0xC9}, "RCX"},
-		// XOR rdx, rdx (48 31 D2)
-		0xD23148: {[]byte{0x48, 0xC7, 0xC2, 0x00, 0x00, 0x00, 0x00}, []byte{0x48, 0x29, 0xD2}, "RDX"},
-		// XOR rbx, rbx (48 31 DB)
-		0xDB3148: {[]byte{0x48, 0xC7, 0xC3, 0x00, 0x00, 0x00, 0x00}, []byte{0x48, 0x29, 0xDB}, "RBX"},
-		// XOR rsi, rsi (48 31 F6)
-		0xF63148: {[]byte{0x48, 0xC7, 0xC6, 0x00, 0x00, 0x00, 0x00}, []byte{0x48, 0x29, 0xF6}, "RSI"},
-		// XOR rdi, rdi (48 31 FF)
-		0xFF3148: {[]byte{0x48, 0xC7, 0xC7, 0x00, 0x00, 0x00, 0x00}, []byte{0x48, 0x29, 0xFF}, "RDI"},
-		// XOR r8, r8 (4D 31 C0)
-		0xC0314D: {[]byte{0x49, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00}, []byte{0x4D, 0x29, 0xC0}, "R8"},
-		// XOR r9, r9 (4D 31 C9)
-		0xC9314D: {[]byte{0x49, 0xC7, 0xC1, 0x00, 0x00, 0x00, 0x00}, []byte{0x4D, 0x29, 0xC9}, "R9"},
-		// XOR r10, r10 (4D 31 D2)
-		0xD2314D: {[]byte{0x49, 0xC7, 0xC2, 0x00, 0x00, 0x00, 0x00}, []byte{0x4D, 0x29, 0xD2}, "R10"},
-		// XOR r11, r11 (4D 31 DB)
-		0xDB314D: {[]byte{0x49, 0xC7, 0xC3, 0x00, 0x00, 0x00, 0x00}, []byte{0x4D, 0x29, 0xDB}, "R11"},
-		// XOR r12, r12 (4D 31 E4)
-		0xE4314D: {[]byte{0x49, 0xC7, 0xC4, 0x00, 0x00, 0x00, 0x00}, []byte{0x4D, 0x29, 0xE4}, "R12"},
-		// XOR r13, r13 (4D 31 ED)
-		0xED314D: {[]byte{0x49, 0xC7, 0xC5, 0x00, 0x00, 0x00, 0x00}, []byte{0x4D, 0x29, 0xED}, "R13"},
-		// XOR r14, r14 (4D 31 F6)
-		0xF6314D: {[]byte{0x49, 0xC7, 0xC6, 0x00, 0x00, 0x00, 0x00}, []byte{0x4D, 0x29, 0xF6}, "R14"},
-		// XOR r15, r15 (4D 31 FF)
-		0xFF314D: {[]byte{0x49, 0xC7, 0xC7, 0x00, 0x00, 0x00, 0x00}, []byte{0x4D, 0x29, 0xFF}, "R15"},
-	}
+type MovImmReplacement struct {
+	Offset   uint64
+	Original string
+	Replaced string
+}
 
-	// Also handle 32-bit XOR (which zero-extends to 64-bit)
-	xorZero32 := map[uint16]struct {
-		mov []byte
-		sub []byte
-		reg string
-	}{
-		0xC031: {[]byte{0xB8, 0x00, 0x00, 0x00, 0x00}, []byte{0x29, 0xC0}, "EAX"},
-		0xC933: {[]byte{0xB9, 0x00, 0x00, 0x00, 0x00}, []byte{0x29, 0xC9}, "ECX"},
-		0xD233: {[]byte{0xBA, 0x00, 0x00, 0x00, 0x00}, []byte{0x29, 0xD2}, "EDX"},
-		0xDB33: {[]byte{0xBB, 0x00, 0x00, 0x00, 0x00}, []byte{0x29, 0xDB}, "EBX"},
-		0xF633: {[]byte{0xBE, 0x00, 0x00, 0x00, 0x00}, []byte{0x29, 0xF6}, "ESI"},
-		0xFF33: {[]byte{0xBF, 0x00, 0x00, 0x00, 0x00}, []byte{0x29, 0xFF}, "EDI"},
-	}
+func ReplaceMovRegImm(code []byte, instructions []Instruction) ([]byte, []MovImmReplacement) {
+	var replacements []MovImmReplacement
+	candidateCount := 0
 
-	// Walk backwards so offsets stay valid while we patch
 	for i := len(instructions) - 1; i >= 0; i-- {
 		insn := instructions[i]
 
-		// XOR r64,r64 -> zero (3 bytes)
-		if insn.Inst.Op == x86asm.XOR && insn.Size == 3 {
-			if len(insn.Inst.Args) >= 2 {
-				arg0, ok0 := insn.Inst.Args[0].(x86asm.Reg)
-				arg1, ok1 := insn.Inst.Args[1].(x86asm.Reg)
-				if ok0 && ok1 && arg0 == arg1 {
-					offset := insn.Offset
-					if offset+2 < uint64(len(code)) {
-						pattern := uint32(code[offset]) | (uint32(code[offset+1]) << 8) | (uint32(code[offset+2]) << 16)
-						if repl, ok := xorZero64[pattern]; ok {
-							var newBytes []byte
-							var newText string
-							if rand.Intn(2) == 0 {
-								newBytes = repl.mov
-								newText = fmt.Sprintf("MOV %s, 0", repl.reg)
-							} else {
-								newBytes = repl.sub
-								newText = fmt.Sprintf("SUB %s, %s", repl.reg, repl.reg)
-							}
-							code = patchBytes(code, offset, code[offset:offset+3], newBytes)
-							replacements = prepend(replacements, XorReplacement{
-								Offset:   offset,
-								Original: fmt.Sprintf("XOR %s, %s", repl.reg, repl.reg),
-								Replaced: newText,
-							})
-							continue
-						}
-					}
-				}
+		if insn.Inst.Op != x86asm.MOV {
+			continue
+		}
+
+		if len(insn.Inst.Args) < 2 {
+			continue
+		}
+
+		dst, okD := insn.Inst.Args[0].(x86asm.Reg)
+		imm, okI := insn.Inst.Args[1].(x86asm.Imm)
+
+		if !okD || !okI {
+			continue
+		}
+
+		regSize := getRegisterSize(dst)
+		if regSize == 0 {
+			continue
+		}
+
+		candidateCount++
+
+		if isStackPointerReg(dst) {
+			continue
+		}
+
+		offset := insn.Offset
+		value := int64(imm)
+
+		var valueSize int
+		var maxVal, minVal int64
+
+		switch regSize {
+		case 8:
+			valueSize = 8
+			maxVal = 127
+			minVal = -128
+			if value < minVal || value > 255 {
+				continue
+			}
+		case 16:
+			valueSize = 16
+			maxVal = 32767
+			minVal = -32768
+			if value < minVal || value > 65535 {
+				continue
+			}
+		case 32:
+			if value >= -128 && value <= 127 {
+				valueSize = 8
+				maxVal = 127
+				minVal = -128
+			} else if value >= -32768 && value <= 32767 {
+				valueSize = 16
+				maxVal = 32767
+				minVal = -32768
+			} else {
+				valueSize = 32
+				maxVal = 0x7FFFFFFF
+				minVal = -0x80000000
 			}
 		}
 
-		// XOR r32,r32 -> zero (2 bytes, zero-extends to 64-bit)
-		if insn.Inst.Op == x86asm.XOR && insn.Size == 2 {
-			if len(insn.Inst.Args) >= 2 {
-				arg0, ok0 := insn.Inst.Args[0].(x86asm.Reg)
-				arg1, ok1 := insn.Inst.Args[1].(x86asm.Reg)
-				if ok0 && ok1 && arg0 == arg1 {
-					offset := insn.Offset
-					if offset+1 < uint64(len(code)) {
-						pattern := uint16(code[offset]) | (uint16(code[offset+1]) << 8)
-						if repl, ok := xorZero32[pattern]; ok {
-							var newBytes []byte
-							var newText string
-							if rand.Intn(2) == 0 {
-								newBytes = repl.mov
-								newText = fmt.Sprintf("MOV %s, 0", repl.reg)
-							} else {
-								newBytes = repl.sub
-								newText = fmt.Sprintf("SUB %s, %s", repl.reg, repl.reg)
-							}
-							code = patchBytes(code, offset, code[offset:offset+2], newBytes)
-							replacements = prepend(replacements, XorReplacement{
-								Offset:   offset,
-								Original: fmt.Sprintf("XOR %s, %s", repl.reg, repl.reg),
-								Replaced: newText,
-							})
-							continue
-						}
-					}
-				}
-			}
+		tmp := chooseTempRegSameSize(dst, regSize)
+		if tmp == 0 {
+			continue
 		}
 
-		// MOV r64, r64 (different registers) -> PUSH/POP or XOR-ADD
-		if insn.Inst.Op == x86asm.MOV && insn.Size == 3 {
-			if len(insn.Inst.Args) >= 2 {
-				dst, okD := insn.Inst.Args[0].(x86asm.Reg)
-				src, okS := insn.Inst.Args[1].(x86asm.Reg)
+		strategy := rand.Intn(3)
 
-				if okD && okS && dst != src && is64BitGPR(dst) && is64BitGPR(src) {
-					offset := insn.Offset
-					if offset+2 < uint64(len(code)) {
-						// Check REX prefix (48/49/4C/4D)
-						rex := code[offset]
-						if (rex & 0xF0) == 0x40 {
-							opcode := code[offset+1]
-							modRM := code[offset+2]
+		var key, encoded int64
+		var newBytes []byte
+		var description string
 
-							// MOV r/m64, r64 (opcode 89) with mod=11b
-							if opcode == 0x89 && (modRM>>6) == 3 {
-								var newBytes []byte
-								var newText string
-
-								if rand.Intn(2) == 0 {
-									// Strategy 1: PUSH src; POP dst
-									pushOp := getPushOpcodeX64(src)
-									popOp := getPopOpcodeX64(dst)
-									newBytes = append(pushOp, popOp...)
-									newText = fmt.Sprintf("PUSH %s; POP %s", src, dst)
-								} else {
-									// Strategy 2: XOR dst, dst; ADD dst, src
-									xorOp := encodeXorX64(dst, dst)
-									addOp := encodeAddX64(dst, src)
-									newBytes = append(xorOp, addOp...)
-									newText = fmt.Sprintf("XOR %s, %s; ADD %s, %s", dst, dst, dst, src)
-								}
-
-								oldBytes := code[offset : offset+3]
-								code = patchBytes(code, offset, oldBytes, newBytes)
-
-								replacements = prepend(replacements, XorReplacement{
-									Offset:   offset,
-									Original: fmt.Sprintf("MOV %s, %s", dst, src),
-									Replaced: newText,
-								})
-							}
-						}
-					}
-				}
+		switch strategy {
+		case 0:
+			key = generateRandomKey(valueSize, value)
+			encoded = value - key
+			if encoded < minVal || encoded > maxVal {
+				continue
 			}
+			newBytes = encodeMovImmSequenceAnySize(dst, tmp, key, encoded, regSize, "add")
+			description = fmt.Sprintf("MOV %s, 0x%X; MOV %s, 0x%X; ADD %s, %s",
+				tmp, key&getMask(valueSize), dst, encoded&getMask(valueSize), dst, tmp)
+
+		case 1:
+			key = generateRandomKey(valueSize, value)
+			encoded = value + key
+			if encoded < minVal || encoded > maxVal {
+				continue
+			}
+			newBytes = encodeMovImmSequenceAnySize(dst, tmp, key, encoded, regSize, "sub")
+			description = fmt.Sprintf("MOV %s, 0x%X; MOV %s, 0x%X; SUB %s, %s",
+				tmp, key&getMask(valueSize), dst, encoded&getMask(valueSize), dst, tmp)
+
+		case 2:
+			key = generateRandomKey(valueSize, value)
+			encoded = value ^ key
+			newBytes = encodeMovImmSequenceAnySize(dst, tmp, key, encoded, regSize, "xor")
+			description = fmt.Sprintf("MOV %s, 0x%X; MOV %s, 0x%X; XOR %s, %s",
+				tmp, key&getMask(valueSize), dst, encoded&getMask(valueSize), dst, tmp)
 		}
+
+		if len(newBytes) == 0 {
+			continue
+		}
+
+		oldBytes := code[offset : offset+uint64(insn.Size)]
+		code = patchBytes(code, offset, oldBytes, newBytes)
+
+		replacements = append(replacements, MovImmReplacement{
+			Offset:   offset,
+			Original: fmt.Sprintf("MOV %s, 0x%X", dst, value&getMask(valueSize)),
+			Replaced: description,
+		})
+
+		return code, replacements
+	}
+
+	if candidateCount > 0 {
+		fmt.Printf("Found %d MOV reg, imm candidates but none were suitable for transformation\n", candidateCount)
 	}
 
 	return code, replacements
 }
 
-func is64BitGPR(reg x86asm.Reg) bool {
-	return reg == x86asm.RAX || reg == x86asm.RCX || reg == x86asm.RDX ||
-		reg == x86asm.RBX || reg == x86asm.RSI || reg == x86asm.RDI ||
-		reg == x86asm.R8 || reg == x86asm.R9 || reg == x86asm.R10 ||
-		reg == x86asm.R11 || reg == x86asm.R12 || reg == x86asm.R13 ||
-		reg == x86asm.R14 || reg == x86asm.R15
+func getRegisterSize(reg x86asm.Reg) int {
+	if reg >= x86asm.AL && reg <= x86asm.BH {
+		return 8
+	}
+	if reg >= x86asm.AX && reg <= x86asm.DI {
+		return 16
+	}
+	if reg >= x86asm.EAX && reg <= x86asm.EDI {
+		return 32
+	}
+	return 0
 }
 
-func getPushOpcodeX64(reg x86asm.Reg) []byte {
-	switch reg {
-	case x86asm.RAX:
-		return []byte{0x50}
-	case x86asm.RCX:
-		return []byte{0x51}
-	case x86asm.RDX:
-		return []byte{0x52}
-	case x86asm.RBX:
-		return []byte{0x53}
-	case x86asm.RSP:
-		return []byte{0x54}
-	case x86asm.RBP:
-		return []byte{0x55}
-	case x86asm.RSI:
-		return []byte{0x56}
-	case x86asm.RDI:
-		return []byte{0x57}
-	case x86asm.R8:
-		return []byte{0x41, 0x50}
-	case x86asm.R9:
-		return []byte{0x41, 0x51}
-	case x86asm.R10:
-		return []byte{0x41, 0x52}
-	case x86asm.R11:
-		return []byte{0x41, 0x53}
-	case x86asm.R12:
-		return []byte{0x41, 0x54}
-	case x86asm.R13:
-		return []byte{0x41, 0x55}
-	case x86asm.R14:
-		return []byte{0x41, 0x56}
-	case x86asm.R15:
-		return []byte{0x41, 0x57}
+func isStackPointerReg(reg x86asm.Reg) bool {
+	return reg == x86asm.ESP || reg == x86asm.EBP ||
+		reg == x86asm.SP || reg == x86asm.BP ||
+		reg == x86asm.AH || reg == x86asm.BH
+}
+
+func chooseTempRegSameSize(dst x86asm.Reg, size int) x86asm.Reg {
+	var candidates []x86asm.Reg
+
+	switch size {
+	case 8:
+		candidates = []x86asm.Reg{x86asm.AL, x86asm.CL, x86asm.DL, x86asm.BL}
+	case 16:
+		candidates = []x86asm.Reg{x86asm.AX, x86asm.CX, x86asm.DX, x86asm.BX, x86asm.SI, x86asm.DI}
+	case 32:
+		candidates = []x86asm.Reg{x86asm.EAX, x86asm.ECX, x86asm.EDX, x86asm.EBX, x86asm.ESI, x86asm.EDI}
+	}
+
+	for _, reg := range candidates {
+		if reg != dst && !isStackPointerReg(reg) {
+			return reg
+		}
+	}
+
+	return 0
+}
+
+func generateRandomKey(valueSize int, originalValue int64) int64 {
+	var key int64
+
+	switch valueSize {
+	case 8:
+		if originalValue >= 0 {
+			key = int64(rand.Intn(128))
+		} else {
+			key = int64(rand.Intn(256) - 128)
+		}
+	case 16:
+		if originalValue >= 0 {
+			key = int64(rand.Intn(32768))
+		} else {
+			key = int64(rand.Intn(65536) - 32768)
+		}
+	case 32:
+		if originalValue >= 0 {
+			key = int64(rand.Int31())
+		} else {
+			key = int64(rand.Int31()) - int64(rand.Int31())
+		}
+	}
+
+	return key
+}
+
+func getMask(valueSize int) int64 {
+	switch valueSize {
+	case 8:
+		return 0xFF
+	case 16:
+		return 0xFFFF
+	case 32:
+		return 0xFFFFFFFF
 	default:
-		return []byte{0x50}
+		return 0xFFFFFFFF
 	}
 }
 
-func getPopOpcodeX64(reg x86asm.Reg) []byte {
+func encodeMovImmSequenceAnySize(dst, tmp x86asm.Reg, key, encoded int64, regSize int, op string) []byte {
+	var result []byte
+
+	result = append(result, encodeMovRegImmAnySize(tmp, key, regSize)...)
+	result = append(result, encodeMovRegImmAnySize(dst, encoded, regSize)...)
+
+	switch op {
+	case "add":
+		result = append(result, encodeArithRegReg(dst, tmp, regSize, 0x00)...)
+	case "sub":
+		result = append(result, encodeArithRegReg(dst, tmp, regSize, 0x28)...)
+	case "xor":
+		result = append(result, encodeArithRegReg(dst, tmp, regSize, 0x30)...)
+	}
+
+	return result
+}
+
+func encodeMovRegImmAnySize(reg x86asm.Reg, imm int64, size int) []byte {
+	var result []byte
+
+	switch size {
+	case 8:
+		opcode := byte(0xB0 + getRegBits8(reg))
+		result = []byte{opcode, byte(imm & 0xFF)}
+
+	case 16:
+		opcode := byte(0xB8 + getRegBits16(reg))
+		result = []byte{0x66, opcode}
+		immBytes := make([]byte, 2)
+		binary.LittleEndian.PutUint16(immBytes, uint16(imm))
+		result = append(result, immBytes...)
+
+	case 32:
+		opcode := byte(0xB8 + getRegBits(reg))
+		result = []byte{opcode}
+		immBytes := make([]byte, 4)
+		binary.LittleEndian.PutUint32(immBytes, uint32(imm))
+		result = append(result, immBytes...)
+	}
+
+	return result
+}
+
+func encodeArithRegReg(dst, src x86asm.Reg, size int, opcodeBase byte) []byte {
+	var result []byte
+
+	switch size {
+	case 8:
+		modRM := getModRM8(dst, src)
+		result = []byte{opcodeBase, modRM}
+
+	case 16:
+		modRM := getModRM16(dst, src)
+		result = []byte{0x66, opcodeBase + 1, modRM}
+
+	case 32:
+		modRM := getModRM(dst, src)
+		result = []byte{opcodeBase + 1, modRM}
+	}
+
+	return result
+}
+
+func getRegBits8(reg x86asm.Reg) byte {
 	switch reg {
-	case x86asm.RAX:
-		return []byte{0x58}
-	case x86asm.RCX:
-		return []byte{0x59}
-	case x86asm.RDX:
-		return []byte{0x5A}
-	case x86asm.RBX:
-		return []byte{0x5B}
-	case x86asm.RSP:
-		return []byte{0x5C}
-	case x86asm.RBP:
-		return []byte{0x5D}
-	case x86asm.RSI:
-		return []byte{0x5E}
-	case x86asm.RDI:
-		return []byte{0x5F}
-	case x86asm.R8:
-		return []byte{0x41, 0x58}
-	case x86asm.R9:
-		return []byte{0x41, 0x59}
-	case x86asm.R10:
-		return []byte{0x41, 0x5A}
-	case x86asm.R11:
-		return []byte{0x41, 0x5B}
-	case x86asm.R12:
-		return []byte{0x41, 0x5C}
-	case x86asm.R13:
-		return []byte{0x41, 0x5D}
-	case x86asm.R14:
-		return []byte{0x41, 0x5E}
-	case x86asm.R15:
-		return []byte{0x41, 0x5F}
-	default:
-		return []byte{0x58}
-	}
-}
-
-func encodeXorX64(dst, src x86asm.Reg) []byte {
-	rex := byte(0x48)
-	if isExtendedReg(dst) || isExtendedReg(src) {
-		rex = calculateREX(dst, src)
-	}
-	modRM := getModRMX64(dst, src)
-	return []byte{rex, 0x31, modRM}
-}
-
-func encodeAddX64(dst, src x86asm.Reg) []byte {
-	rex := byte(0x48)
-	if isExtendedReg(dst) || isExtendedReg(src) {
-		rex = calculateREX(dst, src)
-	}
-	modRM := getModRMX64(dst, src)
-	return []byte{rex, 0x01, modRM}
-}
-
-func isExtendedReg(reg x86asm.Reg) bool {
-	return reg >= x86asm.R8 && reg <= x86asm.R15
-}
-
-func calculateREX(dst, src x86asm.Reg) byte {
-	rex := byte(0x48) // REX.W = 1
-	if isExtendedReg(src) {
-		rex |= 0x04 // REX.R = 1
-	}
-	if isExtendedReg(dst) {
-		rex |= 0x01 // REX.B = 1
-	}
-	return rex
-}
-
-func getModRMX64(dst, src x86asm.Reg) byte {
-	dstBits := getRegBitsX64(dst)
-	srcBits := getRegBitsX64(src)
-	return 0xC0 | (srcBits << 3) | dstBits
-}
-
-func getRegBitsX64(reg x86asm.Reg) byte {
-	switch reg {
-	case x86asm.RAX, x86asm.R8:
+	case x86asm.AL:
 		return 0
-	case x86asm.RCX, x86asm.R9:
+	case x86asm.CL:
 		return 1
-	case x86asm.RDX, x86asm.R10:
+	case x86asm.DL:
 		return 2
-	case x86asm.RBX, x86asm.R11:
+	case x86asm.BL:
 		return 3
-	case x86asm.RSP, x86asm.R12:
+	case x86asm.AH:
 		return 4
-	case x86asm.RBP, x86asm.R13:
+	case x86asm.CH:
 		return 5
-	case x86asm.RSI, x86asm.R14:
+	case x86asm.DH:
 		return 6
-	case x86asm.RDI, x86asm.R15:
+	case x86asm.BH:
 		return 7
 	default:
 		return 0
 	}
 }
 
-func generateRandomX64Instruction() ([]byte, string) {
+func getRegBits16(reg x86asm.Reg) byte {
+	switch reg {
+	case x86asm.AX:
+		return 0
+	case x86asm.CX:
+		return 1
+	case x86asm.DX:
+		return 2
+	case x86asm.BX:
+		return 3
+	case x86asm.SP:
+		return 4
+	case x86asm.BP:
+		return 5
+	case x86asm.SI:
+		return 6
+	case x86asm.DI:
+		return 7
+	default:
+		return 0
+	}
+}
+
+func getModRM8(dst, src x86asm.Reg) byte {
+	dstBits := getRegBits8(dst)
+	srcBits := getRegBits8(src)
+	return 0xC0 | (srcBits << 3) | dstBits
+}
+
+func getModRM16(dst, src x86asm.Reg) byte {
+	dstBits := getRegBits16(dst)
+	srcBits := getRegBits16(src)
+	return 0xC0 | (srcBits << 3) | dstBits
+}
+
+// ============================================================================
+// Shared Helper Functions
+// ============================================================================
+
+func generateRandomInstruction() ([]byte, string) {
 	registers := []struct {
 		name string
-		push byte
-		pop  byte
+		code byte
 	}{
-		{"RAX", 0x50, 0x58}, {"RCX", 0x51, 0x59}, {"RDX", 0x52, 0x5A},
-		{"RBX", 0x53, 0x5B}, {"RSI", 0x56, 0x5E}, {"RDI", 0x57, 0x5F},
+		{"EAX", 0xC0}, {"ECX", 0xC9}, {"EDX", 0xD2}, {"EBX", 0xDB},
+		{"ESI", 0xF6}, {"EDI", 0xFF},
 	}
 
-	choice := rand.Intn(3)
+	safeRegisters := []struct {
+		name    string
+		pushPop byte
+	}{
+		{"EAX", 0x50}, {"ECX", 0x51}, {"EDX", 0x52},
+		{"EBX", 0x53}, {"ESI", 0x56}, {"EDI", 0x57},
+	}
+
+	choice := rand.Intn(4)
 	switch choice {
 	case 0:
 		return []byte{0x90}, "NOP"
 	case 1:
 		reg := registers[rand.Intn(len(registers))]
-		// CMP r64, r64 (48 39 C0 style)
-		modRM := byte(0xC0) | (getRegBitsFromPush(reg.push) << 3) | getRegBitsFromPush(reg.push)
-		return []byte{0x48, 0x39, modRM}, fmt.Sprintf("CMP %s, %s", reg.name, reg.name)
+		return []byte{0x39, reg.code}, fmt.Sprintf("CMP %s, %s", reg.name, reg.name)
 	case 2:
-		reg := registers[rand.Intn(len(registers))]
-		return []byte{reg.push, reg.pop}, fmt.Sprintf("PUSH %s; POP %s", reg.name, reg.name)
+		reg := safeRegisters[rand.Intn(len(safeRegisters))]
+		return []byte{reg.pushPop, reg.pushPop + 0x08}, fmt.Sprintf("PUSH %s; POP %s", reg.name, reg.name)
+	case 3:
+		return []byte{0x60, 0x61}, "PUSHAD; POPAD"
 	}
 	return []byte{0x90}, "NOP"
 }
 
-func getRegBitsFromPush(pushOp byte) byte {
-	return (pushOp - 0x50) & 0x7
-}
-
-func patchBytesX64(code []byte, offset uint64, oldBytes, newBytes []byte) []byte {
-	delta := len(newBytes) - len(oldBytes)
-	if delta == 0 {
-		copy(code[offset:], newBytes)
-		return code
-	}
-	newCode := make([]byte, len(code)+delta)
-	copy(newCode[:offset], code[:offset])
-	copy(newCode[offset:], newBytes)
-	copy(newCode[offset+uint64(len(newBytes)):], code[offset+uint64(len(oldBytes)):])
-	return newCode
-}
-
-func prepend(lst []XorReplacement, item XorReplacement) []XorReplacement {
-	return append([]XorReplacement{item}, lst...)
-}
-
-func fixRelativeOffsetsx64(data []byte, insertOffset uint64, instructions []Instruction, injectSize int) {
+func fixRelativeOffsets(data []byte, insertOffset uint64, instructions []Instruction, injectSize int) {
 	for _, insn := range instructions {
-		if isRelativeJumpOrCallX64(insn.Inst.Op) {
-			target := getRelativeTargetX64(insn.Inst, insn.Offset)
+		if isRelativeJumpOrCallX86(insn.Inst.Op) {
+			target := getRelativeTargetX86(insn.Inst, insn.Offset)
 			if target == 0 {
 				continue
 			}
@@ -472,13 +524,13 @@ func fixRelativeOffsetsx64(data []byte, insertOffset uint64, instructions []Inst
 			insnEnd := insn.Offset + uint64(insn.Size)
 
 			if insnEnd <= insertOffset && target > insertOffset {
-				adjustRelativeJumpX64(data, insn.Offset, insn.Size, int32(injectSize))
+				adjustRelativeJumpX86(data, insn.Offset, insn.Size, int32(injectSize))
 			}
 		}
 	}
 }
 
-func isRelativeJumpOrCallX64(op x86asm.Op) bool {
+func isRelativeJumpOrCallX86(op x86asm.Op) bool {
 	switch op {
 	case x86asm.JMP, x86asm.JA, x86asm.JAE, x86asm.JB, x86asm.JBE,
 		x86asm.JE, x86asm.JG, x86asm.JGE, x86asm.JL, x86asm.JLE,
@@ -489,7 +541,7 @@ func isRelativeJumpOrCallX64(op x86asm.Op) bool {
 	return false
 }
 
-func getRelativeTargetX64(inst x86asm.Inst, currentOffset uint64) uint64 {
+func getRelativeTargetX86(inst x86asm.Inst, currentOffset uint64) uint64 {
 	for _, arg := range inst.Args {
 		if arg == nil {
 			continue
@@ -504,7 +556,7 @@ func getRelativeTargetX64(inst x86asm.Inst, currentOffset uint64) uint64 {
 	return 0
 }
 
-func adjustRelativeJumpX64(data []byte, insnOffset uint64, insnSize int, adjustment int32) {
+func adjustRelativeJumpX86(data []byte, insnOffset uint64, insnSize int, adjustment int32) {
 	var offsetSize int
 	var offsetPos uint64
 
@@ -529,4 +581,186 @@ func adjustRelativeJumpX64(data []byte, insnOffset uint64, insnSize int, adjustm
 			binary.LittleEndian.PutUint32(data[offsetPos:], uint32(currentOffset+adjustment))
 		}
 	}
+}
+
+func getRegBits(reg x86asm.Reg) byte {
+	switch reg {
+	case x86asm.EAX:
+		return 0
+	case x86asm.ECX:
+		return 1
+	case x86asm.EDX:
+		return 2
+	case x86asm.EBX:
+		return 3
+	case x86asm.ESP:
+		return 4
+	case x86asm.EBP:
+		return 5
+	case x86asm.ESI:
+		return 6
+	case x86asm.EDI:
+		return 7
+	default:
+		return 0
+	}
+}
+
+func getModRM(dst, src x86asm.Reg) byte {
+	dstBits := getRegBits(dst)
+	srcBits := getRegBits(src)
+	return 0xC0 | (srcBits << 3) | dstBits
+}
+
+func is32BitGPR(reg x86asm.Reg) bool {
+	return reg == x86asm.EAX || reg == x86asm.ECX || reg == x86asm.EDX ||
+		reg == x86asm.EBX || reg == x86asm.ESI || reg == x86asm.EDI ||
+		reg == x86asm.ESP || reg == x86asm.EBP
+}
+
+// isAddrImm returns true if the immediate operand is a 32-bit address
+// (we treat any imm32 that lies inside the current code segment as an address)
+func isAddrImm(imm x86asm.Imm, codeBase, codeSize uint32) bool {
+	addr := uint32(imm)
+	return addr >= codeBase && addr < codeBase+codeSize
+}
+
+// patchImm32 replaces a 32-bit immediate inside the instruction encoding
+func patchImm32(data []byte, off uint32, delta int32) {
+	v := int32(binary.LittleEndian.Uint32(data[off : off+4]))
+	binary.LittleEndian.PutUint32(data[off:], uint32(v+delta))
+}
+
+// relocateCode patches every absolute 32-bit immediate that points *after* the
+// insertion site.  It handles:
+//   - MOV  reg, imm32
+//   - PUSH imm32
+//   - CALL/JMP rel32   (already done by your old fixRelativeOffsets)
+//   - LEA  reg, [disp32]
+func relocateCode(data []byte, codeBase, insertOff, delta uint32) {
+	instOff := uint32(0)
+	for instOff < uint32(len(data)) {
+		inst, err := x86asm.Decode(data[instOff:], 32)
+		if err != nil {
+			instOff++
+			continue
+		}
+		next := instOff + uint32(inst.Len)
+
+		switch inst.Op {
+		case x86asm.MOV, x86asm.PUSH, x86asm.LEA:
+			for _, a := range inst.Args {
+				if imm, ok := a.(x86asm.Imm); ok && isAddrImm(imm, codeBase, uint32(len(data))) {
+					addr := uint32(imm)
+					if addr >= codeBase+insertOff { // only fix refs after insert
+						immOff := immOffsetInEncoding(data, instOff)
+						patchImm32(data, instOff+immOff, int32(delta))
+					}
+				}
+			}
+		}
+		// let the old routine fix relative branches
+		if isRelativeJumpOrCallX86(inst.Op) {
+			tgt := getRelativeTargetX86(inst, uint64(instOff))
+			if tgt != 0 && uint32(tgt) >= codeBase+insertOff {
+				adjustRelativeJumpX86(data, uint64(instOff), inst.Len, int32(delta))
+			}
+		}
+		instOff = next
+	}
+}
+
+// immOffsetInEncoding returns the offset of the 32-bit immediate inside
+// the instruction bytes.  We only need the common encodings we produce.
+func immOffsetInEncoding(code []byte, instOff uint32) uint32 {
+	b := code[instOff:]
+	// skip legacy prefixes (66, 67, F0, F2, F3, segment, etc.)
+	i := 0
+	for i < len(b) && isPrefixByte(b[i]) {
+		i++
+	}
+	// skip opcode (1 or 2 bytes)
+	if i < len(b) && b[i] == 0x0F {
+		i += 2 // two-byte opcode
+	} else {
+		i++ // single-byte opcode
+	}
+	// skip ModRM
+	if i < len(b) && (b[i]&0xC0) != 0xC0 {
+		i++ // ModRM
+		if i < len(b) && (b[i-1]&0x07) == 0x04 {
+			i++ // SIB
+		}
+		// disp8
+		if i < len(b) && (b[i-1]&0xC0) == 0x40 {
+			i++
+		}
+		// disp32
+		if i < len(b) && (b[i-1]&0xC0) == 0x80 {
+			i += 4
+		}
+	}
+	return uint32(i)
+}
+
+func isPrefixByte(x byte) bool {
+	return x == 0x66 || x == 0x67 || x == 0xF0 || x == 0xF2 || x == 0xF3 ||
+		(x >= 0x26 && x <= 0x2E) || (x >= 0x36 && x <= 0x3E) || x == 0x64 || x == 0x65
+}
+
+func ReplaceMovRegReg(code []byte, instructions []Instruction) ([]byte, []MovRegRegReplacement) {
+var replacements []MovRegRegReplacement
+    for _, insn := range instructions {
+            // 1. must be MOV
+            if insn.Inst.Op != x86asm.MOV {
+                    continue
+            }
+            // 2. exactly two register operands
+            if len(insn.Inst.Args) != 2 {
+                    continue
+            }
+            dst, okD := insn.Inst.Args[0].(x86asm.Reg)
+            src, okS := insn.Inst.Args[1].(x86asm.Reg)
+            if !okD || !okS {
+                    continue
+            }
+            // 3. same size (16 or 32 bit)
+            dSz := getRegisterSize(dst)
+            sSz := getRegisterSize(src)
+            if dSz != sSz || (dSz != 16 && dSz != 32) {
+                    continue
+            }
+            // 4. dest must not be stack pointer (we would lose the value)
+            if isStackPointerReg(dst) {
+                    continue
+            }
+            // 5. src may be stack pointer, but then we must not use it again
+            //    (still safe for PUSH/POP because the value is on the stack)
+            //
+            // 6. build the new byte sequence
+            var newBytes []byte
+            switch dSz {
+            case 16:
+                    newBytes = []byte{
+                            0x66, 0x50 + getRegBits16(src), // PUSH src16
+                            0x66, 0x58 + getRegBits16(dst), // POP  dst16
+                    }
+            case 32:
+                    newBytes = []byte{
+                            0x50 + getRegBits(src), // PUSH src32
+                            0x58 + getRegBits(dst), // POP  dst32
+                    }
+            }
+
+            // 7. patch the instruction stream
+            oldBytes := code[insn.Offset : insn.Offset+uint64(insn.Size)]
+            code = patchBytes(code, insn.Offset, oldBytes, newBytes)
+
+            replacements = append(replacements, MovRegRegReplacement{
+                    Offset:   insn.Offset,
+                    Original: fmt.Sprintf("MOV %s, %s", dst, src),
+                    Replaced: fmt.Sprintf("PUSH %s; POP %s", src, dst),
+            })
+    }
+    return code, replacements
 }

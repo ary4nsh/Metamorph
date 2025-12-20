@@ -84,6 +84,7 @@ And altering these instructions:
             <td></td>
             <td align=center>Metamorphicated (sample 1)</td>
             <td align=center>Metamorphicated (sample 2)</td>
+            <td align=center>Metamorphicated (sample 3)</td>
         </tr>
         <tr>
             <td>

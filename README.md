@@ -153,6 +153,9 @@ After that, you can use this tool to generate a metamorphicated 32-bit/64-bit EL
 ```
 
 ## Example:
+
+- 32-bit:
+
 ```
 ┌──(kali㉿kali)-[~/Codes/Go/Metamorph]
 └─$ ./Metamorph x64shellcode x64shellcode2
@@ -172,6 +175,30 @@ Injecting NOP at offset 0x15
 Output file: 4497 bytes
 
 Success: shellcode2
+
+┌──(kali㉿kali)-[~/Codes/Go/Metamorph]
+└─$ ./x64shellcode2
+$ whoami
+kali
+```
+
+- 64-bit:
+```
+┌──(kali㉿kali)-[~/Codes/Go/Metamorph]
+└─$ ./Metamorph x64shellcode x64shellcode2
+Original file: 4680 bytes (64-bit)
+Disassembled 12 instructions
+Replaced 3 patterns:
+  0x0: XOR RDI, RDI -> MOV RDI, 0
+  0x12: XOR RSI, RSI -> MOV RSI, 0
+  0x1a: XOR RDX, RDX -> MOV RDX, 0
+Injecting CMP RDI, RDI at offset 0x13
+
+.text size change: 36 -> 51 bytes (+15)
+
+Output file: 4695 bytes
+
+Success: x64shellcode2
 
 ┌──(kali㉿kali)-[~/Codes/Go/Metamorph]
 └─$ ./x64shellcode2

@@ -38,6 +38,7 @@ Sample2:
 ## Usage
 
 Simply convert your assembly code into a machine code using these commands.
+
 For 32-bit:
 ```
 nasm -f elf32 shellcode.asm -o shellcode.o

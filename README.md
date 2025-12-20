@@ -177,7 +177,7 @@ Output file: 4497 bytes
 Success: shellcode2
 
 ┌──(kali㉿kali)-[~/Codes/Go/Metamorph]
-└─$ ./x64shellcode2
+└─$ ./shellcode2
 $ whoami
 kali
 ```

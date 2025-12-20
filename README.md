@@ -129,7 +129,7 @@ And altering these instructions:
         </tr>
     </table>
 
-* Note: In some runs, the newly created shellcode might crash. Run the tool again, and it may work correctly.
+Note: In some runs, the newly created shellcode might crash. Run the tool again, and it may work correctly.
 
 ## Usage
 

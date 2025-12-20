@@ -8,19 +8,21 @@ This code is a simple metamorphic engine that takes a 32-bit/64-bit ELF executab
 
 And altering these instructions:
 
+mov [register 1], [register 2]
+
 - Original:
 ```diff
-- mov [register 1], [register 2]
+- MOV ECX, ESP
 ```
 Sample 1:
 ```diff
-+ push [register 2] 
-+ pop [register 1]
++ push ESP
++ pop ECX
 ```
 Sample 2:
 ```diff
-+ xor [register 1], [register 1] 
-+ add [register 1], [register 2]
++ XOR ECX, ECX 
++ ADD ECX, ESP
 ```
 
 - Original:

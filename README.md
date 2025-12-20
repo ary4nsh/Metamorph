@@ -156,19 +156,22 @@ After that, you can use this tool to generate a metamorphicated 32-bit/64-bit EL
 ```
 ┌──(kali㉿kali)-[~/Codes/Go/Metamorph]
 └─$ ./Metamorph x64shellcode x64shellcode2
-Original file: 4680 bytes (64-bit)
-Disassembled 12 instructions
-Replaced 3 patterns:
-  0x0: XOR RDI, RDI -> SUB RDI, RDI
-  0x12: XOR RSI, RSI -> MOV RSI, 0
-  0x1a: XOR RDX, RDX -> MOV RDX, 0
-Injecting CMP RDX, RDX at offset 0x12
+Original file: 4492 bytes (32-bit)
+Disassembled 11 instructions
+Replaced 1 MOV reg, imm pattern:
+  0x15: MOV AL, 0xB -> MOV CL, 0xD; MOV AL, 0xFE; ADD AL, CL
+Replaced 1 XOR/MOV pattern:
+  0x11: MOV ECX, ESP -> PUSH ESP; POP ECX
+  0xd: MOV EBX, ESP -> PUSH ESP; POP EBX
+  0x0: XOR EAX, EAX -> SUB EAX, EAX
+Applied 2 transformation(s)
+Injecting NOP at offset 0x15
 
-.text size change: 36 -> 47 bytes (+11)
+.text size change: 25 -> 30 bytes (+5)
 
-Output file: 4691 bytes
+Output file: 4497 bytes
 
-Success: x64shellcode2
+Success: shellcode2
 
 ┌──(kali㉿kali)-[~/Codes/Go/Metamorph]
 └─$ ./x64shellcode2

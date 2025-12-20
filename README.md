@@ -76,6 +76,10 @@ And altering these instructions:
 + SUB EAX, EAX
 ```
 
+</td>
+        </tr>
+    </table>
+
 - mov [register], [immidiate value]
 
 <table>
@@ -120,6 +124,10 @@ And altering these instructions:
 + MOV AL, 0x6F
 + SUB AL, CL
 ```
+
+</td>
+        </tr>
+    </table>
 
 * Note: In some runs, the newly created shellcode might crash. Run the tool again, and it may work correctly.
 

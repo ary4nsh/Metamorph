@@ -23,19 +23,24 @@ mov [register 1], [register 2]
 ```diff
 - MOV ECX, ESP
 ```
+
 </td>
 <td align=center>→</td>
 <td>
+        
 ```diff
 + push ESP
 + pop ECX
 ```
+
 </td>
 <td>
+        
 ```diff
 + XOR ECX, ECX 
 + ADD ECX, ESP
 ```
+
 </td>
         </tr>
     </table>

@@ -7,7 +7,8 @@ This code is a simple metamorphic engine that takes a 32-bit/64-bit ELF executab
 - PUSHAD / POPAD
 
 And altering these instructions:
-Original:
+
+- Original:
 ```diff
 - mov [register 1], [register 2]
 ```
@@ -22,7 +23,7 @@ Sample 2:
 + add [register 1], [register 2]
 ```
 
-Original:
+- Original:
 ```diff
 - xor [register], [register]
 ```

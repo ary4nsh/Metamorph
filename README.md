@@ -10,20 +10,35 @@ And altering these instructions:
 
 mov [register 1], [register 2]
 
-- Original:
+<table>
+        <tr>
+            <td align=center>Original</td>
+            <td></td>
+            <td align=center>Metamorphicated (sample 1)</td>
+            <td align=center>Metamorphicated (sample 2)</td>
+        </tr>
+        <tr>
+            <td>
+
 ```diff
 - MOV ECX, ESP
 ```
-Sample 1:
+</td>
+<td align=center>→</td>
+<td>
 ```diff
 + push ESP
 + pop ECX
 ```
-Sample 2:
+</td>
+<td>
 ```diff
 + XOR ECX, ECX 
 + ADD ECX, ESP
 ```
+</td>
+        </tr>
+    </table>
 
 - Original:
 ```diff

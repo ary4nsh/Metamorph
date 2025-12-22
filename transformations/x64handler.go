@@ -21,6 +21,12 @@ type XorReplacementX64 struct {
 	Replaced string
 }
 
+type MovImmReplacementX64 struct {
+	Offset   uint64
+	Original string
+	Replaced string
+}
+
 // ProcessX64Code applies metamorphic transformations to x64 code
 func ProcessX64Code(code []byte) ([]byte, error) {
 	rand.Seed(time.Now().UnixNano())
@@ -33,16 +39,34 @@ func ProcessX64Code(code []byte) ([]byte, error) {
 
 	fmt.Printf("Disassembled %d instructions\n", len(instructions))
 
-	// Replace XOR and MOV patterns
-	code, replacements := replaceX64Patterns(code, instructions)
-	if len(replacements) > 0 {
-		fmt.Printf("Replaced %d patterns:\n", len(replacements))
-		for _, repl := range replacements {
+	transformationCount := 0
+
+	// Try MOV reg, imm transformation
+	code, movReplacements := ReplaceMovRegImmX64(code, instructions)
+	if len(movReplacements) > 0 {
+		fmt.Printf("Replaced 1 MOV reg, imm pattern:\n")
+		for _, repl := range movReplacements {
 			fmt.Printf("  0x%x: %s -> %s\n", repl.Offset, repl.Original, repl.Replaced)
 		}
+		transformationCount++
+		// Re-disassemble after transformation
+		instructions, _ = disassemble(code, 64)
+	}
 
+	// Try XOR and MOV patterns
+	code, xorReplacements := replaceX64Patterns(code, instructions)
+	if len(xorReplacements) > 0 {
+		fmt.Printf("Replaced %d XOR/MOV pattern(s):\n", len(xorReplacements))
+		for _, repl := range xorReplacements {
+			fmt.Printf("  0x%x: %s -> %s\n", repl.Offset, repl.Original, repl.Replaced)
+		}
+		transformationCount++
 		// Re-disassemble
 		instructions, _ = disassemble(code, 64)
+	}
+
+	if transformationCount > 0 {
+		fmt.Printf("Applied %d transformation(s)\n", transformationCount)
 	}
 
 	// Inject random instruction
@@ -61,7 +85,7 @@ func ProcessX64Code(code []byte) ([]byte, error) {
 		copy(newCode[insertOffset+uint64(len(injectBytes)):], code[insertOffset:])
 
 		// Fix relative jumps
-		fixRelativeOffsets(newCode, insertOffset, instructions, len(injectBytes))
+		fixRelativeOffsetsX64(newCode, insertOffset, instructions, len(injectBytes))
 
 		return newCode, nil
 	}
@@ -69,28 +93,403 @@ func ProcessX64Code(code []byte) ([]byte, error) {
 	return code, nil
 }
 
-func disassembleX64(code []byte, mode int) ([]Instruction, error) {
-	var instructions []Instruction
-	offset := uint64(0)
+// ============================================================================
+// MOV reg, imm Transformation for x64 (supports 8/16/32/64-bit registers)
+// ============================================================================
 
-	for offset < uint64(len(code)) {
-		inst, err := x86asm.Decode(code[offset:], mode)
-		if err != nil {
-			offset++
+func ReplaceMovRegImmX64(code []byte, instructions []Instruction) ([]byte, []MovImmReplacementX64) {
+	var replacements []MovImmReplacementX64
+	candidateCount := 0
+
+	for i := len(instructions) - 1; i >= 0; i-- {
+		insn := instructions[i]
+
+		if insn.Inst.Op != x86asm.MOV {
 			continue
 		}
 
-		instructions = append(instructions, Instruction{
-			Offset: offset,
-			Size:   inst.Len,
-			Inst:   inst,
+		if len(insn.Inst.Args) < 2 {
+			continue
+		}
+
+		dst, okD := insn.Inst.Args[0].(x86asm.Reg)
+		imm, okI := insn.Inst.Args[1].(x86asm.Imm)
+
+		if !okD || !okI {
+			continue
+		}
+
+		regSize := getRegisterSizeX64(dst)
+		if regSize == 0 {
+			continue
+		}
+
+		candidateCount++
+
+		if isStackPointerRegX64(dst) {
+			continue
+		}
+
+		offset := insn.Offset
+		value := int64(imm)
+
+		var valueSize int
+		var maxVal, minVal int64
+
+		switch regSize {
+		case 8:
+			valueSize = 8
+			maxVal = 127
+			minVal = -128
+			if value < minVal || value > 255 {
+				continue
+			}
+		case 16:
+			valueSize = 16
+			maxVal = 32767
+			minVal = -32768
+			if value < minVal || value > 65535 {
+				continue
+			}
+		case 32:
+			if value >= -128 && value <= 127 {
+				valueSize = 8
+				maxVal = 127
+				minVal = -128
+			} else if value >= -32768 && value <= 32767 {
+				valueSize = 16
+				maxVal = 32767
+				minVal = -32768
+			} else {
+				valueSize = 32
+				maxVal = 0x7FFFFFFF
+				minVal = -0x80000000
+			}
+		case 64:
+			if value >= -128 && value <= 127 {
+				valueSize = 8
+				maxVal = 127
+				minVal = -128
+			} else if value >= -32768 && value <= 32767 {
+				valueSize = 16
+				maxVal = 32767
+				minVal = -32768
+			} else if value >= -0x80000000 && value <= 0x7FFFFFFF {
+				valueSize = 32
+				maxVal = 0x7FFFFFFF
+				minVal = -0x80000000
+			} else {
+				valueSize = 64
+				maxVal = 0x7FFFFFFFFFFFFFFF
+				minVal = -0x8000000000000000
+			}
+		}
+
+		tmp := chooseTempRegSameSizeX64(dst, regSize)
+		if tmp == 0 {
+			continue
+		}
+
+		strategy := rand.Intn(3)
+
+		var key, encoded int64
+		var newBytes []byte
+		var description string
+
+		switch strategy {
+		case 0: // ADD
+			key = generateRandomKeyX64(valueSize, value)
+			encoded = value - key
+			if encoded < minVal || encoded > maxVal {
+				continue
+			}
+			newBytes = encodeMovImmSequenceAnySizeX64(dst, tmp, key, encoded, regSize, "add")
+			description = fmt.Sprintf("MOV %s, 0x%X; MOV %s, 0x%X; ADD %s, %s",
+				tmp, key&getMaskX64(valueSize), dst, encoded&getMaskX64(valueSize), dst, tmp)
+
+		case 1: // SUB
+			key = generateRandomKeyX64(valueSize, value)
+			encoded = value + key
+			if encoded < minVal || encoded > maxVal {
+				continue
+			}
+			newBytes = encodeMovImmSequenceAnySizeX64(dst, tmp, key, encoded, regSize, "sub")
+			description = fmt.Sprintf("MOV %s, 0x%X; MOV %s, 0x%X; SUB %s, %s",
+				tmp, key&getMaskX64(valueSize), dst, encoded&getMaskX64(valueSize), dst, tmp)
+
+		case 2: // XOR
+			key = generateRandomKeyX64(valueSize, value)
+			encoded = value ^ key
+			newBytes = encodeMovImmSequenceAnySizeX64(dst, tmp, key, encoded, regSize, "xor")
+			description = fmt.Sprintf("MOV %s, 0x%X; MOV %s, 0x%X; XOR %s, %s",
+				tmp, key&getMaskX64(valueSize), dst, encoded&getMaskX64(valueSize), dst, tmp)
+		}
+
+		if len(newBytes) == 0 {
+			continue
+		}
+
+		oldBytes := code[offset : offset+uint64(insn.Size)]
+		code = patchBytes(code, offset, oldBytes, newBytes)
+
+		replacements = append(replacements, MovImmReplacementX64{
+			Offset:   offset,
+			Original: fmt.Sprintf("MOV %s, 0x%X", dst, value&getMaskX64(valueSize)),
+			Replaced: description,
 		})
 
-		offset += uint64(inst.Len)
+		return code, replacements
 	}
 
-	return instructions, nil
+	if candidateCount > 0 {
+		fmt.Printf("Found %d MOV reg, imm candidates but none were suitable for transformation\n", candidateCount)
+	}
+
+	return code, replacements
 }
+
+func getRegisterSizeX64(reg x86asm.Reg) int {
+	// 8-bit registers
+	if reg >= x86asm.AL && reg <= x86asm.R15B {
+		return 8
+	}
+	// 16-bit registers
+	if reg >= x86asm.AX && reg <= x86asm.R15W {
+		return 16
+	}
+	// 32-bit registers (including R8L-R15L)
+	if reg >= x86asm.EAX && reg <= x86asm.R15L {
+		return 32
+	}
+	// 64-bit registers
+	if reg >= x86asm.RAX && reg <= x86asm.R15 {
+		return 64
+	}
+	return 0
+}
+
+func isStackPointerRegX64(reg x86asm.Reg) bool {
+	return reg == x86asm.RSP || reg == x86asm.RBP ||
+		reg == x86asm.ESP || reg == x86asm.EBP ||
+		reg == x86asm.SP || reg == x86asm.BP ||
+		reg == x86asm.SPB || reg == x86asm.BPB
+}
+
+func chooseTempRegSameSizeX64(dst x86asm.Reg, size int) x86asm.Reg {
+	var candidates []x86asm.Reg
+
+	switch size {
+	case 8:
+		candidates = []x86asm.Reg{x86asm.AL, x86asm.CL, x86asm.DL, x86asm.BL}
+	case 16:
+		candidates = []x86asm.Reg{x86asm.AX, x86asm.CX, x86asm.DX, x86asm.BX, x86asm.SI, x86asm.DI}
+	case 32:
+		candidates = []x86asm.Reg{x86asm.EAX, x86asm.ECX, x86asm.EDX, x86asm.EBX, x86asm.ESI, x86asm.EDI}
+	case 64:
+		candidates = []x86asm.Reg{x86asm.RAX, x86asm.RCX, x86asm.RDX, x86asm.RBX,
+			x86asm.RSI, x86asm.RDI, x86asm.R8, x86asm.R9, x86asm.R10,
+			x86asm.R11, x86asm.R12, x86asm.R13, x86asm.R14, x86asm.R15}
+	}
+
+	for _, reg := range candidates {
+		if reg != dst && !isStackPointerRegX64(reg) {
+			return reg
+		}
+	}
+
+	return 0
+}
+
+func generateRandomKeyX64(valueSize int, originalValue int64) int64 {
+	var key int64
+
+	switch valueSize {
+	case 8:
+		if originalValue >= 0 {
+			key = int64(rand.Intn(128))
+		} else {
+			key = int64(rand.Intn(256) - 128)
+		}
+	case 16:
+		if originalValue >= 0 {
+			key = int64(rand.Intn(32768))
+		} else {
+			key = int64(rand.Intn(65536) - 32768)
+		}
+	case 32:
+		if originalValue >= 0 {
+			key = int64(rand.Int31())
+		} else {
+			key = int64(rand.Int31()) - int64(rand.Int31())
+		}
+	case 64:
+		if originalValue >= 0 {
+			key = rand.Int63()
+		} else {
+			key = rand.Int63() - rand.Int63()
+		}
+	}
+
+	return key
+}
+
+func getMaskX64(valueSize int) int64 {
+	switch valueSize {
+	case 8:
+		return 0xFF
+	case 16:
+		return 0xFFFF
+	case 32:
+		return 0xFFFFFFFF
+	case 64:
+		return -1
+	default:
+		return 0xFFFFFFFF
+	}
+}
+
+func encodeMovImmSequenceAnySizeX64(dst, tmp x86asm.Reg, key, encoded int64, regSize int, op string) []byte {
+	var result []byte
+
+	result = append(result, encodeMovRegImmAnySizeX64(tmp, key, regSize)...)
+	result = append(result, encodeMovRegImmAnySizeX64(dst, encoded, regSize)...)
+
+	switch op {
+	case "add":
+		result = append(result, encodeArithRegRegX64(dst, tmp, regSize, 0x00)...)
+	case "sub":
+		result = append(result, encodeArithRegRegX64(dst, tmp, regSize, 0x28)...)
+	case "xor":
+		result = append(result, encodeArithRegRegX64(dst, tmp, regSize, 0x30)...)
+	}
+
+	return result
+}
+
+func encodeMovRegImmAnySizeX64(reg x86asm.Reg, imm int64, size int) []byte {
+	var result []byte
+
+	switch size {
+	case 8:
+		if isExtendedReg(reg) || reg >= x86asm.SPB {
+			rex := byte(0x40)
+			if isExtendedReg(reg) {
+				rex |= 0x01
+			}
+			opcode := byte(0xB0 + (getRegBitsX64(reg) & 0x7))
+			result = []byte{rex, opcode, byte(imm & 0xFF)}
+		} else {
+			opcode := byte(0xB0 + getRegBitsX64(reg))
+			result = []byte{opcode, byte(imm & 0xFF)}
+		}
+
+	case 16:
+		opcode := byte(0xB8 + (getRegBitsX64(reg) & 0x7))
+		if isExtendedReg(reg) {
+			result = []byte{0x66, 0x41, opcode}
+		} else {
+			result = []byte{0x66, opcode}
+		}
+		immBytes := make([]byte, 2)
+		binary.LittleEndian.PutUint16(immBytes, uint16(imm))
+		result = append(result, immBytes...)
+
+	case 32:
+		opcode := byte(0xB8 + (getRegBitsX64(reg) & 0x7))
+		if isExtendedReg(reg) {
+			result = []byte{0x41, opcode}
+		} else {
+			result = []byte{opcode}
+		}
+		immBytes := make([]byte, 4)
+		binary.LittleEndian.PutUint32(immBytes, uint32(imm))
+		result = append(result, immBytes...)
+
+	case 64:
+		rex := byte(0x48)
+		if isExtendedReg(reg) {
+			rex |= 0x01
+		}
+		opcode := byte(0xB8 + (getRegBitsX64(reg) & 0x7))
+		result = []byte{rex, opcode}
+		immBytes := make([]byte, 8)
+		binary.LittleEndian.PutUint64(immBytes, uint64(imm))
+		result = append(result, immBytes...)
+	}
+
+	return result
+}
+
+func encodeArithRegRegX64(dst, src x86asm.Reg, size int, opcodeBase byte) []byte {
+	var result []byte
+
+	switch size {
+	case 8:
+		rex := byte(0)
+		if isExtendedReg(src) {
+			rex |= 0x04
+		}
+		if isExtendedReg(dst) {
+			rex |= 0x01
+		}
+		if dst >= x86asm.SPB || src >= x86asm.SPB {
+			rex |= 0x40
+		}
+		modRM := getModRMX64(dst, src)
+		if rex != 0 {
+			result = []byte{rex, opcodeBase, modRM}
+		} else {
+			result = []byte{opcodeBase, modRM}
+		}
+
+	case 16:
+		rex := byte(0)
+		if isExtendedReg(src) {
+			rex |= 0x04
+		}
+		if isExtendedReg(dst) {
+			rex |= 0x01
+		}
+		modRM := getModRMX64(dst, src)
+		if rex != 0 {
+			result = []byte{0x66, rex, opcodeBase + 1, modRM}
+		} else {
+			result = []byte{0x66, opcodeBase + 1, modRM}
+		}
+
+	case 32:
+		rex := byte(0)
+		if isExtendedReg(src) {
+			rex |= 0x04
+		}
+		if isExtendedReg(dst) {
+			rex |= 0x01
+		}
+		modRM := getModRMX64(dst, src)
+		if rex != 0 {
+			result = []byte{rex, opcodeBase + 1, modRM}
+		} else {
+			result = []byte{opcodeBase + 1, modRM}
+		}
+
+	case 64:
+		rex := byte(0x48)
+		if isExtendedReg(src) {
+			rex |= 0x04
+		}
+		if isExtendedReg(dst) {
+			rex |= 0x01
+		}
+		modRM := getModRMX64(dst, src)
+		result = []byte{rex, opcodeBase + 1, modRM}
+	}
+
+	return result
+}
+
+// ============================================================================
+// Existing XOR/MOV Pattern Replacement Code
+// ============================================================================
 
 func replaceX64Patterns(code []byte, instructions []Instruction) ([]byte, []XorReplacement) {
 	var replacements []XorReplacement
@@ -393,21 +792,21 @@ func getModRMX64(dst, src x86asm.Reg) byte {
 
 func getRegBitsX64(reg x86asm.Reg) byte {
 	switch reg {
-	case x86asm.RAX, x86asm.R8:
+	case x86asm.RAX, x86asm.R8, x86asm.EAX, x86asm.AX, x86asm.AL:
 		return 0
-	case x86asm.RCX, x86asm.R9:
+	case x86asm.RCX, x86asm.R9, x86asm.ECX, x86asm.CX, x86asm.CL:
 		return 1
-	case x86asm.RDX, x86asm.R10:
+	case x86asm.RDX, x86asm.R10, x86asm.EDX, x86asm.DX, x86asm.DL:
 		return 2
-	case x86asm.RBX, x86asm.R11:
+	case x86asm.RBX, x86asm.R11, x86asm.EBX, x86asm.BX, x86asm.BL:
 		return 3
-	case x86asm.RSP, x86asm.R12:
+	case x86asm.RSP, x86asm.R12, x86asm.ESP, x86asm.SP, x86asm.SPB:
 		return 4
-	case x86asm.RBP, x86asm.R13:
+	case x86asm.RBP, x86asm.R13, x86asm.EBP, x86asm.BP, x86asm.BPB:
 		return 5
-	case x86asm.RSI, x86asm.R14:
+	case x86asm.RSI, x86asm.R14, x86asm.ESI, x86asm.SI:
 		return 6
-	case x86asm.RDI, x86asm.R15:
+	case x86asm.RDI, x86asm.R15, x86asm.EDI, x86asm.DI:
 		return 7
 	default:
 		return 0
@@ -444,7 +843,7 @@ func getRegBitsFromPush(pushOp byte) byte {
 	return (pushOp - 0x50) & 0x7
 }
 
-func patchBytesX64(code []byte, offset uint64, oldBytes, newBytes []byte) []byte {
+func patchBytes(code []byte, offset uint64, oldBytes, newBytes []byte) []byte {
 	delta := len(newBytes) - len(oldBytes)
 	if delta == 0 {
 		copy(code[offset:], newBytes)
@@ -461,7 +860,7 @@ func prepend(lst []XorReplacement, item XorReplacement) []XorReplacement {
 	return append([]XorReplacement{item}, lst...)
 }
 
-func fixRelativeOffsetsx64(data []byte, insertOffset uint64, instructions []Instruction, injectSize int) {
+func fixRelativeOffsetsX64(data []byte, insertOffset uint64, instructions []Instruction, injectSize int) {
 	for _, insn := range instructions {
 		if isRelativeJumpOrCallX64(insn.Inst.Op) {
 			target := getRelativeTargetX64(insn.Inst, insn.Offset)

@@ -1,6 +1,6 @@
 # Metamorph
 
-This code is a simple metamorphic engine that takes a 32-bit/64-bit ELF executable binary as input, and generates a 32-bit/64-bit metamorphicated ELF executable binary file. It currently supports injecting these instructions as NOP:
+This tool is a metamorphic engine that takes a 32-bit/64-bit ELF executable binary as input, and generates a 32-bit/64-bit metamorphicated ELF executable binary file. It currently supports injecting these instructions as NOP:
 - NOP
 - CMP [register],[register]
 - PUSH [register] / POP [register]

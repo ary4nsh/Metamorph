@@ -186,22 +186,26 @@ kali
 ```
 ┌──(kali㉿kali)-[~/Codes/Go/Metamorph]
 └─$ ./Metamorph x64shellcode x64shellcode2
-Original file: 4680 bytes (64-bit)
-Disassembled 12 instructions
-Replaced 3 patterns:
-  0x0: XOR RDI, RDI -> MOV RDI, 0
-  0x12: XOR RSI, RSI -> MOV RSI, 0
-  0x1a: XOR RDX, RDX -> MOV RDX, 0
-Injecting CMP RDI, RDI at offset 0x13
+Original file: 4672 bytes (64-bit)
+Disassembled 10 instructions
+Replaced 1 MOV reg, imm pattern:
+  0x1b: MOV AL, 0x3B -> MOV CL, 0x43; MOV AL, 0xF8; ADD AL, CL
+Replaced 4 XOR/MOV pattern(s):
+  0x0: XOR RAX, RAX -> SUB RAX, RAX
+  0x3: MOV RDI, RAX -> XOR RDI, RDI; ADD RDI, RAX
+  0x15: XOR RSI, RSI -> SUB RSI, RSI
+  0x18: XOR RDX, RDX -> SUB RDX, RDX
+Applied 2 transformation(s)
+Injecting CMP RDI, RDI at offset 0x14
 
-.text size change: 36 -> 51 bytes (+15)
+.text size change: 31 -> 41 bytes (+10)
 
-Output file: 4695 bytes
+Output file: 4682 bytes
 
 Success: x64shellcode2
-
+                                                                     
 ┌──(kali㉿kali)-[~/Codes/Go/Metamorph]
-└─$ ./x64shellcode2
+└─$ ./x64shellcode2                       
 $ whoami
 kali
 ```

@@ -102,8 +102,8 @@ And altering these instructions:
 <td>
 
 ```diff
-+ MOV CL, 0x5A
-+ MOV AL, 0xB1
++ MOV CL, 0x5
++ MOV AL, 0x6
 + ADD AL, CL
 ```
 
